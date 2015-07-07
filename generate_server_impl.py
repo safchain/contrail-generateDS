@@ -46,7 +46,58 @@ class GenerateServerImplMixin(object):
         collection_idents = [ident for ident in self._non_exclude_idents()
                                        if ident.getName() != _BASE_PARENT]
         class_name = CamelCase(os.path.basename(gen_fname.split('.py')[0]))
-        # TODO derive from thrift service name
+        mixin_class_name = class_name + 'Mixin'
+        write(gen_file, "")
+        write(gen_file, "")
+
+        #
+        # Mixin class
+        #
+        write(gen_file, "class %s(object):" %(mixin_class_name))
+        write(gen_file, "")
+        write(gen_file, "    def __init__(self):")
+        write(gen_file, "")
+        write(gen_file, "        super(%s, self).__init__()" %(mixin_class_name))
+        write(gen_file, "")
+        write(gen_file, "        self._resource_classes = {}")
+        for ident in self._non_exclude_idents():
+            ident_name = ident.getName()
+            camel_name = CamelCase(ident_name)
+            write(gen_file, "        self._resource_classes['%s'] = %sServerGen" %(ident_name, camel_name))
+        write(gen_file, "")
+ 
+        for ident in self._non_exclude_idents():
+            ident_name = ident.getName()
+            parents = ident.getParents()
+
+            method_name = ident.getName().replace('-', '_')
+            camel_name = CamelCase(ident.getName())
+
+            child_idents = []
+            back_idents = []
+
+            for link_info in ident.getLinksInfo():
+                if not ident.isLinkHas(link_info):
+                    continue
+                child_ident = ident.getLinkTo(link_info)
+                child_idents.append((child_ident, link_info))
+
+            for back_link_info in ident.getBackLinksInfo():
+                if not ident.isLinkRef(back_link_info):
+                    continue
+                back_ident = ident.getBackLinkFrom(back_link_info)
+                back_idents.append((back_ident, back_link_info))
+
+            self._generate_db_post(gen_file, method_name, ident)
+            self._generate_db_put(gen_file, method_name, ident)
+            self._generate_db_delete(gen_file, method_name, ident, child_idents, back_idents)
+
+        write(gen_file, "#end class %s" %(mixin_class_name))
+        write(gen_file, "")
+
+        #
+        # VNC SERVER
+        #
         write(gen_file, "class %s(object):" %(class_name))
         write(gen_file, "    def __new__(cls, *args, **kwargs):")
         write(gen_file, "        obj = super(%s, cls).__new__(cls, *args, **kwargs)" \
@@ -75,13 +126,6 @@ class GenerateServerImplMixin(object):
         write(gen_file, "        self._db_conn = None")
         write(gen_file, "        self._get_common = None")
         write(gen_file, "        self._post_common = None")
-        write(gen_file, "")
-        write(gen_file, "        self._resource_classes = {}")
-        for ident in self._non_exclude_idents():
-            ident_name = ident.getName()
-            camel_name = CamelCase(ident_name)
-            write(gen_file, "        self._resource_classes['%s'] = %sServerGen" %(ident_name, camel_name))
-            write(gen_file, "")
         write(gen_file, "")
         write(gen_file, "        # Generate LinkObjects for all entities")
         write(gen_file, "        links = []")
@@ -126,11 +170,6 @@ class GenerateServerImplMixin(object):
         for ident in self._non_exclude_idents():
             ident_name = ident.getName()
             parents = ident.getParents()
-            #(parent_ident, parent_link) = ident.getParent()
-            #if parent_ident:
-            #    parent_name = parent_ident.getName()
-            #    parent_method_name = parent_name.replace('-', '_')
-            #    parent_default_fq_name = parent_ident.getDefaultFQName()
 
             method_name = ident.getName().replace('-', '_')
             camel_name = CamelCase(ident.getName())
@@ -151,11 +190,8 @@ class GenerateServerImplMixin(object):
                 back_idents.append((back_ident, back_link_info))
 
             self._generate_http_get(gen_file, method_name, ident)
-            self._generate_db_post(gen_file, method_name, ident)
             self._generate_http_post(gen_file, method_name, ident)
-            self._generate_db_put(gen_file, method_name, ident)
             self._generate_http_put(gen_file, method_name, ident)
-            self._generate_db_delete(gen_file, method_name, ident, child_idents, back_idents)
             self._generate_http_delete(gen_file, method_name, ident)
 
             # GET on collection
@@ -468,7 +504,10 @@ class GenerateServerImplMixin(object):
         write(gen_file, "    def %ss_db_post(self, context, body):" %(method_name))
         write(gen_file, "        key = '%s'" %(ident_name))
         write(gen_file, "        obj_dict = body")
-        write(gen_file, "        self._post_validate(key, obj_dict=obj_dict)")
+        write(gen_file, "        (ok, result) = self._post_validate(key, obj_dict=obj_dict)")
+        write(gen_file, "        if not ok:")
+        write(gen_file, "            return ok, result")
+        write(gen_file, "")
         write(gen_file, "        fq_name = obj_dict['fq_name']")
         write(gen_file, "")
         write(gen_file, "        try:")
@@ -539,12 +578,6 @@ class GenerateServerImplMixin(object):
         write(gen_file, "")
         write(gen_file, "        tenant_name = context.tenant_name")
         write(gen_file, "")
-        # TODO below shouldn't be needed
-        #write(gen_file, "        # Remove given tenant name in fq_name and replace with one")
-        #write(gen_file, "        # received/authenticated in http header")
-        #write(gen_file, "        obj_dict['_fq_name'][%s] = tenant_name" \
-            #                                              %(self._FQ_NAME_TENANT_IDX))
-        write(gen_file, "")
         write(gen_file, "        # type-specific hook")
         write(gen_file, "        r_class = self.get_resource_class('%s')" %(ident_name))
         write(gen_file, "        if r_class:")
@@ -605,7 +638,10 @@ class GenerateServerImplMixin(object):
         write(gen_file, "    def %ss_http_post(self):" %(method_name))
         write(gen_file, "        key = '%s'" %(ident_name))
         write(gen_file, "        obj_dict = request.json[key]")
-        write(gen_file, "        self._post_validate(key, obj_dict=obj_dict)")
+        write(gen_file, "        (ok, result) = self._post_validate(key, obj_dict=obj_dict)")
+        write(gen_file, "        if not ok:")
+        write(gen_file, "            (code, msg) = result")
+        write(gen_file, "            abort(code, msg)")
         write(gen_file, "        context = VncRequestContext.from_request(request)")
         write(gen_file, "        ok, result = self.%ss_db_post(context, obj_dict)" %(method_name))
         write(gen_file, "        if not ok:")
